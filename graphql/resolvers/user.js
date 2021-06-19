@@ -1,31 +1,82 @@
-const { User } = require("../models");
+const { User, Message } = require("../../models");
+const { Op } = require("sequelize");
 const bcrypt = require("bcrypt");
-const { UserInputError, AuthenticationError } = require("apollo-server");
 const jwt = require("jsonwebtoken");
-const {JWT_SECRET} = require("../config/env.json");
+const { 
+  UserInputError, 
+  AuthenticationError 
+} = require("apollo-server");
+const { JWT_SECRET } = require("../../config/env.json");
+const { passwordSchema, passwordSchemaErrorMapper } = require("../../utils/passwordValidation");
+
 module.exports = {
     Query: {
+
       getUsers: async (_, __, context) => {
+
         try{
-          let userFromJWT;
-          if(context?.req?.headers?.authorization){
-            const token = context?.req?.headers?.authorization?.slice("Bearer ".length);
-            jwt.verify(token, JWT_SECRET, (err, decoded)=>{
-              if(err){
-                throw new AuthenticationError("Not authenticated to access this");
-              }
-              userFromJWT = decoded;
-            })
+          let userFromJWT = context.user;
+          if(!userFromJWT){
+            throw new AuthenticationError("Authorization needed to get list of users.");
           }
-          const users = await User.findAll();
-          return users.filter(u=>u.userName!==userFromJWT.userName);
+          const users = await User.findAll({
+              where: {
+                  userName: {
+                      [Op.ne]: userFromJWT?.userName
+                }
+              }
+          });
+          return users;
         }
         catch(err){
           console.log(err);
           throw err;
         }
-      },
+
+      }, // getUsers Ends
+
+      getMessages: async (_, args, context)=>{
+          const { from } = args;
+          try{
+            if(!context.user){
+                throw new AuthenticationError("Authorization needed to get list of messages.");
+            }
+            const sender = await User.findOne({
+                where: {
+                    userName: from
+                }
+            });
+            if(!sender){
+                throw new UserInputError("Sender does not exist!");
+            }
+            if(context?.user?.userName === from){
+                throw new UserInputError("Cannot get messages sent to yourself as you can't send message to self.");
+            }
+            const peopleChatting = [from, context?.user?.userName];
+            messages = await Message.findAll({
+                where: {
+                    from: {
+                        [Op.in]: peopleChatting,
+                    },
+                    to: {
+                        [Op.in]: peopleChatting,
+                    }
+                },
+                order: [
+                    ["createdAt", "ASC"]
+                ],
+            })
+            return messages;
+          }
+          catch(error){
+              console.log(error);
+              throw error;
+          }
+
+      }, // getMessages Ends
+
       login: async(_, args)=>{
+
         const { userName, password } = args; 
         let errors = {};
         if(userName?.trim()?.length===0){
@@ -53,7 +104,7 @@ module.exports = {
             throw new AuthenticationError("Incorrect password", {errors});
           }
 
-          const token = jwt.sign({userName}, JWT_SECRET, { expiresIn: '1h' });
+          const token = jwt.sign({userName, email: user?.email}, JWT_SECRET, { expiresIn: '7d' });
 
           return {
             ...user.toJSON(),
@@ -65,9 +116,13 @@ module.exports = {
           console.log(error);
           throw error;
         }
-      }
-    },
+
+      }, // login Ends
+
+    }, // Query Ends
+
     Mutation: {
+
       registerUser: async (_, args)=>{
 
         const { userName, password, confirmPassword, email } = args;
@@ -79,9 +134,17 @@ module.exports = {
           if(typeof userName!=="string" || userName?.trim()?.length===0){
             errors.userName =  "User name cannot be left empty!";
           }
+
           if(typeof password!=="string" || password?.trim()?.length===0){
             errors.password = "Password field cannot be left empty!";
           }
+          else{
+            if(!passwordSchema.validate(password)){
+              errors.password = "Bad Password";
+              errors.badPassword = passwordSchema.validate(password, {list: true}).map(e=>passwordSchemaErrorMapper[e]);
+            }
+          }
+
           if(typeof confirmPassword!=="string" || confirmPassword?.trim()?.length===0){
             errors.confirmPassword = "Confirm password field cannot be left empty!";
           }
@@ -94,28 +157,9 @@ module.exports = {
           if(Object.keys(errors).length!==0){
             throw errors;
           }
+
           // Encrypt password
           const encryptedPassword = await bcrypt.hash(password, 10);
-
-          // // Check if the user already exists 
-          // const uName = await User.findOne({
-          //   where: {userName}
-          // });
-
-          // const uEmail = await User.findOne({
-          //   where: {email}
-          // });
-
-          // if(uName!==null){
-          //   errors.userName = "User with this name already exists!";
-          // }
-          // if(uEmail!==null){
-          //   errors.email = "User with this email already exists!";
-          // }
-
-          // if(uName!==null || uEmail!==null){
-          //   throw errors;
-          // }
 
           // CREATE USER
           const user = await User.create({userName, password: encryptedPassword, email});
@@ -140,6 +184,9 @@ module.exports = {
             throw new UserInputError("Encountered an error", {errors: error})
           }
         }
-      }
-    }
+
+      }, // registerUser Ends
+
+    }, // Mutation Ends
+
   };
